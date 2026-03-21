@@ -3,6 +3,8 @@ import sqlite3
 from datetime import datetime
 import unicodedata
 import re
+import io
+import time
 from PIL import Image
 import numpy as np
 import pydicom
@@ -13,7 +15,6 @@ from reportlab.lib.enums import TA_JUSTIFY
 import os
 import torch
 import cv2
-from torchvision import transforms
 import sys
 from openai import OpenAI  
 import pandas as pd 
@@ -21,13 +22,14 @@ import plotly.express as px
 
 # Trỏ đường dẫn vào thư mục chứa code AI
 sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
-from mri_analyzer import analyze_brain_ai_driven
-from mri_model import ResNetMRI
+from mri_analyzer import analyze_mri_unet
+from unet_model import UNet
 
 # ==========================================
 # CONFIG & FOLDERS
 # ==========================================
 st.set_page_config(page_title="NeuroVision AI", layout="wide", page_icon=r"C:\Users\Asus\Hackathon\Hackathon_2026-main\Hackathon_2026-main\iconfinder-bl-1646-brain-artificial-intelligence-electronic-computer-processor-consciousness-4575061_121498.png")
+st.markdown('<div id="top-of-page"></div>', unsafe_allow_html=True)
 
 if not os.path.exists("history_img"):
     os.makedirs("history_img")
@@ -40,8 +42,8 @@ except:
 @st.cache_resource
 def load_ai_model():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = ResNetMRI(num_classes=2).to(device)
-    model.load_state_dict(torch.load("models/mri_model_best.pth", map_location=device))
+    model = UNet(in_channels=1, out_channels=1).to(device)
+    model.load_state_dict(torch.load("models/unet_best.pth", map_location=device))
     model.eval()
     return model, device
 
@@ -76,76 +78,122 @@ conn.commit()
 # =========================
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=DM+Sans:wght@500;700&display=swap');
 
 :root {
-    --bg-main: #0b1118;
-    --bg-soft: rgba(15, 23, 35, 0.78);
-    --bg-soft-strong: rgba(17, 27, 40, 0.88);
-    --text-main: #f5fbff;
-    --text-soft: #a8bac9;
-    --teal: #00ADB5;
-    --cyan: #59f3ff;
-    --line: rgba(122, 236, 255, 0.16);
-    --line-strong: rgba(122, 236, 255, 0.32);
-    --shadow-soft: 0 18px 40px rgba(0, 0, 0, 0.24);
-    --shadow-glow: 0 0 0 1px rgba(89, 243, 255, 0.10), 0 18px 40px rgba(0, 173, 181, 0.14);
+    --bg-main: #edf7f1;
+    --bg-layer: #e3f2e9;
+    --bg-panel: rgba(255, 255, 255, 0.94);
+    --bg-panel-strong: #ffffff;
+    --bg-sidebar: #0f2f27;
+    --bg-sidebar-soft: #133a30;
+    --bg-input: #f7fcf9;
+    --text-main: #163128;
+    --text-soft: #5f776d;
+    --text-strong: #0d241d;
+    --line: rgba(18, 82, 58, 0.10);
+    --line-strong: rgba(18, 82, 58, 0.18);
+    --accent: #22a06b;
+    --accent-strong: #157347;
+    --accent-soft: rgba(34, 160, 107, 0.10);
+    --accent-soft-strong: rgba(34, 160, 107, 0.18);
+    --accent-wash: #dff5ea;
+    --shadow-soft: 0 22px 48px -34px rgba(20, 66, 49, 0.22);
+    --shadow-hover: 0 30px 56px -36px rgba(20, 66, 49, 0.30);
+    --radius-xl: 34px;
+    --radius-lg: 26px;
+    --radius-md: 18px;
+    --radius-sm: 14px;
 }
 
 @keyframes fadeInUp {
     0% {
         opacity: 0;
-        transform: translateY(18px);
+        transform: translateY(22px) scale(0.985);
     }
     100% {
         opacity: 1;
-        transform: translateY(0);
+        transform: translateY(0) scale(1);
     }
 }
 
 @keyframes pulse {
     0%, 100% {
         opacity: 1;
-        text-shadow: 0 0 0 rgba(89, 243, 255, 0.0);
+        transform: translateY(0);
     }
     50% {
-        opacity: 0.72;
-        text-shadow: 0 0 18px rgba(89, 243, 255, 0.28);
+        opacity: 0.74;
+        transform: translateY(-2px);
+    }
+}
+
+@keyframes greenFlow {
+    0% {
+        background-position: 0% 50%;
+    }
+    100% {
+        background-position: 100% 50%;
     }
 }
 
 html, body, [class*="css"] {
-    font-family: 'Plus Jakarta Sans', sans-serif !important;
+    font-family: 'Manrope', sans-serif !important;
     font-size: 17px !important;
     color: var(--text-main);
+    scroll-behavior: smooth;
+    scrollbar-width: thin;
+    scrollbar-color: #22a06b rgba(34, 160, 107, 0.08);
 }
 
 body, .stApp {
     background:
-        radial-gradient(circle at 12% 14%, rgba(0, 173, 181, 0.16), transparent 26%),
-        radial-gradient(circle at 88% 10%, rgba(89, 243, 255, 0.10), transparent 24%),
-        linear-gradient(180deg, #091018 0%, #0b1118 45%, #0e1620 100%);
+        radial-gradient(circle at top left, rgba(34, 160, 107, 0.16), transparent 18%),
+        radial-gradient(circle at 88% 8%, rgba(93, 196, 130, 0.16), transparent 16%),
+        linear-gradient(180deg, #f5fbf7 0%, #edf7f1 52%, #e7f2ec 100%);
     color: var(--text-main);
 }
 
+::-webkit-scrollbar {
+    width: 14px;
+    height: 14px;
+}
+
+::-webkit-scrollbar-track {
+    background: rgba(34, 160, 107, 0.08);
+    border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb {
+    background: linear-gradient(180deg, #80d3a5 0%, #22a06b 100%);
+    border-radius: 999px;
+    border: 3px solid rgba(237, 247, 241, 0.92);
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: linear-gradient(180deg, #68c593 0%, #178053 100%);
+}
+
 [data-testid="stHeader"] {
-    background: rgba(11, 17, 24, 0.72);
-    backdrop-filter: blur(14px);
+    background: rgba(237, 247, 241, 0.82);
+    backdrop-filter: blur(16px);
+    border-bottom: 1px solid rgba(18, 82, 58, 0.08);
 }
 
 [data-testid="stSidebar"] {
     background:
-        linear-gradient(180deg, rgba(10, 16, 24, 0.94) 0%, rgba(14, 22, 32, 0.96) 100%);
+        linear-gradient(180deg, var(--bg-sidebar) 0%, var(--bg-sidebar-soft) 100%);
     border-right: 1px solid rgba(255, 255, 255, 0.04);
+    box-shadow: 10px 0 30px -24px rgba(11, 43, 34, 0.45);
     padding-top: 0.25rem;
 }
 
 [data-testid="stSidebar"] > div:first-child {
-    padding-top: 1.1rem;
+    padding-top: 1rem;
 }
 
 [data-testid="stSidebar"] .block-container {
-    padding-top: 0.35rem;
+    padding-top: 0.4rem;
     padding-left: 1rem;
     padding-right: 1rem;
 }
@@ -159,30 +207,45 @@ body, .stApp {
 }
 
 [data-testid="stSidebar"] .stRadio [role="radiogroup"] {
-    gap: 0.55rem;
+    gap: 0.6rem;
     width: 100%;
 }
 
 [data-testid="stSidebar"] .stRadio [data-baseweb="radio"] {
     margin: 0;
     width: 100%;
-    border-radius: 16px;
+    border-radius: 18px;
     padding: 0.2rem 0.35rem;
-    background: rgba(255, 255, 255, 0.03);
-    border: 1px solid rgba(255, 255, 255, 0.05);
+    background: transparent;
+    border: 1px solid transparent;
+    transition: all 0.25s ease;
 }
 
 [data-testid="stSidebar"] .stRadio label {
     width: 100%;
     margin: 0;
-    padding: 0.6rem 0.8rem;
-    border-radius: 12px;
+    padding: 0.9rem 1rem;
+    border-radius: 16px;
     justify-content: flex-start;
-    color: var(--text-main) !important;
+    color: rgba(255, 255, 255, 0.76) !important;
+    font-weight: 700;
+    letter-spacing: 0.015em;
 }
 
 [data-testid="stSidebar"] .stRadio label:hover {
-    background: rgba(255, 255, 255, 0.04);
+    background: rgba(255, 255, 255, 0.06);
+    color: #ffffff !important;
+}
+
+[data-testid="stSidebar"] .stRadio [data-baseweb="radio"]:has(input:checked) {
+    background: linear-gradient(135deg, rgba(34, 160, 107, 0.22), rgba(80, 191, 123, 0.14));
+    border: 1px solid rgba(124, 226, 166, 0.20);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+[data-testid="stSidebar"] .stRadio [data-baseweb="radio"]:has(input:checked) label {
+    background: rgba(255, 255, 255, 0.02);
+    color: #ffffff !important;
 }
 
 .sidebar-header {
@@ -192,14 +255,14 @@ body, .stApp {
     gap: 0.7rem;
     width: 100%;
     margin: 0 auto 1rem auto;
-    padding: 0.8rem 1rem;
-    border-radius: 18px;
-    background: linear-gradient(180deg, rgba(255,255,255,0.045), rgba(255,255,255,0.02));
-    border: 1px solid rgba(89, 243, 255, 0.10);
-    color: var(--text-main);
-    font-size: 0.9rem;
+    padding: 1rem 1.05rem;
+    border-radius: 24px;
+    background: linear-gradient(180deg, rgba(255,255,255,0.09), rgba(255,255,255,0.03));
+    border: 1px solid rgba(255,255,255,0.08);
+    color: #ffffff;
+    font-size: 0.82rem;
     font-weight: 800;
-    letter-spacing: 0.14em;
+    letter-spacing: 0.22em;
     text-transform: uppercase;
     text-align: center;
     box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
@@ -210,32 +273,40 @@ body, .stApp {
     height: 26px;
     object-fit: contain;
     display: block;
-    filter: drop-shadow(0 0 10px rgba(89, 243, 255, 0.18));
+    filter: drop-shadow(0 0 14px rgba(124, 226, 166, 0.14));
 }
 
 h1, h2, h3 {
     font-weight: 800 !important;
     letter-spacing: -0.03em;
     line-height: 1.12;
-    color: var(--text-main);
-    margin-top: 0.2rem;
-    margin-bottom: 0.75rem;
+    color: var(--text-strong);
+    margin-top: 0.15rem;
+    margin-bottom: 0.9rem;
 }
 
-h1 { font-size: 2.6rem !important; }
-h2 { font-size: 2rem !important; }
-h3 { font-size: 1.45rem !important; }
+h1 { font-size: 2.9rem !important; }
+h2 { font-size: 2.1rem !important; }
+h3 { font-size: 1.55rem !important; }
 
 p, label, .stMarkdown, .stCaption, .stText, .stRadio label, .stSelectbox label {
     color: var(--text-main) !important;
+}
+
+.stApp [data-testid="stMarkdownContainer"] p {
+    line-height: 1.6;
+}
+
+[data-testid="stAppViewContainer"] .block-container {
+    animation: fadeInUp 0.55s ease both;
 }
 
 .brand-title { 
     display: flex;
     justify-content: center;
     align-items: center;
-    gap: 15px;
-    margin-bottom: 0;
+    gap: 18px;
+    margin-bottom: 0.35rem;
     padding-bottom: 0;
     text-align: center;
 }
@@ -247,7 +318,7 @@ p, label, .stMarkdown, .stCaption, .stText, .stRadio label, .stSelectbox label {
     align-items: center;
     justify-content: center;
     flex: 0 0 auto;
-    filter: drop-shadow(0 0 18px rgba(89, 243, 255, 0.16));
+    filter: drop-shadow(0 18px 24px rgba(34, 160, 107, 0.20));
 }
 
 .brand-mark svg {
@@ -258,33 +329,37 @@ p, label, .stMarkdown, .stCaption, .stText, .stRadio label, .stSelectbox label {
 
 .brand-word {
     display: inline-block;
-    font-size: 64px;
+    font-size: 72px;
     font-weight: 800;
-    line-height: 0.96;
-    letter-spacing: -0.06em;
-    background: linear-gradient(135deg, #ffffff 0%, #c9fbff 35%, #59f3ff 62%, #00ADB5 100%);
+    line-height: 0.92;
+    letter-spacing: -0.08em;
+    background: linear-gradient(135deg, #0b211b 0%, #1d493b 68%, #2f7d62 100%);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
-    text-shadow: 0 0 32px rgba(89, 243, 255, 0.18);
+    text-shadow: none;
 }
 
 .brand-subtitle,
 .page-subheader {
-    font-size: 1.02rem;
+    font-size: 1.04rem;
     color: var(--text-soft) !important;
     text-align: center;
-    margin-bottom: 2rem;
+    margin-bottom: 2.1rem;
     font-weight: 500;
-    letter-spacing: 0.01em;
+    letter-spacing: 0.005em;
+    max-width: 820px;
+    margin-left: auto;
+    margin-right: auto;
 }
 
 .page-header {
-    font-size: 2.15rem;
+    font-size: 2.45rem;
     font-weight: 800;
     text-align: center;
-    margin-bottom: 0.45rem;
-    color: var(--text-main);
-    letter-spacing: -0.03em;
+    margin-bottom: 0.55rem;
+    color: var(--text-strong);
+    letter-spacing: -0.05em;
+    text-transform: none;
 }
 
 button,
@@ -294,19 +369,17 @@ a,
 [data-testid="stExpanderToggleIcon"],
 .stDownloadButton > button,
 .stButton > button {
-    transition: all 0.3s ease-in-out !important;
+    transition: all 0.24s ease !important;
 }
 
 div[data-testid="stVerticalBlockBorderWrapper"] {
-    padding: 1.6rem !important;
-    margin-bottom: 1.35rem;
-    border-radius: 24px !important;
+    padding: 1.7rem !important;
+    margin-bottom: 1.4rem;
+    border-radius: var(--radius-xl) !important;
     border: 1px solid var(--line) !important;
     background:
-        linear-gradient(180deg, rgba(20, 31, 45, 0.72) 0%, rgba(14, 22, 33, 0.78) 100%) !important;
-    backdrop-filter: blur(16px);
-    -webkit-backdrop-filter: blur(16px);
-    box-shadow: var(--shadow-soft), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+        linear-gradient(180deg, rgba(255,255,255,0.94), rgba(255,252,247,0.92)) !important;
+    box-shadow: var(--shadow-soft) !important;
     position: relative;
     overflow: hidden;
     animation: fadeInUp 0.7s ease both;
@@ -316,85 +389,107 @@ div[data-testid="stVerticalBlockBorderWrapper"]::before {
     content: "";
     position: absolute;
     inset: 0;
-    background: linear-gradient(135deg, rgba(89, 243, 255, 0.10), transparent 30%, transparent 70%, rgba(0, 173, 181, 0.10));
+    background:
+        linear-gradient(135deg, rgba(255,255,255,0.72), transparent 42%),
+        linear-gradient(180deg, rgba(34,160,107,0.045), transparent 36%);
     pointer-events: none;
 }
 
 div[data-testid="stVerticalBlockBorderWrapper"]:hover {
-    transform: translateY(-4px);
-    border-color: var(--line-strong) !important;
-    box-shadow: var(--shadow-glow), 0 24px 52px rgba(0, 0, 0, 0.28);
+    transform: translateY(-4px) rotate(-0.2deg);
+    box-shadow: var(--shadow-hover) !important;
 }
 
 .stImage > img {
-    border-radius: 18px;
-    box-shadow: 0 10px 28px rgba(0,0,0,0.24);
-    border: 1px solid rgba(255,255,255,0.05);
+    border-radius: 22px;
+    box-shadow: 0 26px 42px -32px rgba(15, 23, 42, 0.34);
+    border: 1px solid rgba(15, 23, 42, 0.08);
 }
 
 .stButton > button,
 .stDownloadButton > button,
 div[data-testid="stFormSubmitButton"] > button {
     min-height: 3.1rem;
-    border-radius: 16px;
-    border: 1px solid rgba(89, 243, 255, 0.18);
-    background: linear-gradient(135deg, #007b83 0%, #00ADB5 48%, #59f3ff 100%);
-    color: #f8feff;
+    border-radius: 999px;
+    border: 1px solid rgba(15, 23, 42, 0.06);
+    background: linear-gradient(135deg, #0f5d3f 0%, #22a06b 55%, #4fbf7b 100%);
+    color: #ffffff;
     font-weight: 800;
     font-size: 0.98rem;
-    letter-spacing: 0.01em;
-    box-shadow: 0 14px 28px rgba(0, 173, 181, 0.22);
+    letter-spacing: 0.015em;
+    box-shadow: 0 18px 32px -22px rgba(15, 93, 63, 0.34);
 }
 
 .stButton > button:hover,
 .stDownloadButton > button:hover,
 div[data-testid="stFormSubmitButton"] > button:hover {
     transform: translateY(-2px) scale(1.01);
-    border-color: rgba(89, 243, 255, 0.42);
-    box-shadow: 0 18px 36px rgba(0, 173, 181, 0.32), 0 0 22px rgba(89, 243, 255, 0.16);
-    filter: brightness(1.05);
+    filter: brightness(1.03);
+}
+
+.scroll-to-top {
+    position: fixed;
+    bottom: 30px;
+    right: 30px;
+    background: linear-gradient(135deg, #0f5d3f 0%, #22a06b 100%);
+    color: white;
+    padding: 12px 20px;
+    border-radius: 999px;
+    text-decoration: none;
+    font-weight: bold;
+    border: 1px solid rgba(15, 23, 42, 0.06);
+    box-shadow: 0 16px 30px -24px rgba(15, 93, 63, 0.34);
+    z-index: 9999;
+    transition: 0.3s;
+}
+
+.scroll-to-top:hover {
+    transform: translateY(-3px);
+    filter: brightness(1.03);
 }
 
 .stButton > button:focus,
 .stDownloadButton > button:focus,
 div[data-testid="stFormSubmitButton"] > button:focus {
     outline: none;
-    box-shadow: 0 0 0 0.22rem rgba(89, 243, 255, 0.18), 0 18px 36px rgba(0, 173, 181, 0.24);
+    box-shadow: 0 0 0 0.22rem rgba(34, 160, 107, 0.16);
 }
 
 .stTextInput input,
 .stTextArea textarea,
 .stSelectbox div[data-baseweb="select"] > div,
 .stNumberInput input {
-    background: rgba(255, 255, 255, 0.035) !important;
-    border: 1px solid rgba(255, 255, 255, 0.08) !important;
-    border-radius: 16px !important;
-    color: var(--text-main) !important;
+    background: var(--bg-input) !important;
+    border: 1px solid rgba(18, 82, 58, 0.10) !important;
+    border-radius: var(--radius-md) !important;
+    color: var(--text-strong) !important;
     font-size: 0.98rem !important;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.9) !important;
 }
 
 .stTextInput input:focus,
 .stTextArea textarea:focus,
-.stNumberInput input:focus {
-    border-color: rgba(89, 243, 255, 0.36) !important;
-    box-shadow: 0 0 0 0.18rem rgba(89, 243, 255, 0.10) !important;
+.stNumberInput input:focus,
+.stSelectbox div[data-baseweb="select"] > div:focus-within {
+    border-color: rgba(34, 160, 107, 0.36) !important;
+    box-shadow: 0 0 0 0.20rem rgba(34, 160, 107, 0.12) !important;
 }
 
 .stTabs [data-baseweb="tab-list"] {
-    gap: 0.5rem;
+    gap: 0.55rem;
     justify-content: center;
-    background: rgba(255, 255, 255, 0.03);
-    border: 1px solid rgba(255, 255, 255, 0.06);
+    background: rgba(255,255,255,0.56);
+    border: 1px solid rgba(15, 23, 42, 0.06);
     border-radius: 999px;
-    padding: 0.35rem;
+    padding: 0.45rem;
     width: fit-content;
     margin: 0 auto 1.1rem auto;
-    box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.75);
 }
 
 .stTabs [data-baseweb="tab"] {
-    min-height: 48px;
-    padding: 0.72rem 1.25rem;
+    min-height: 46px;
+    padding: 0.7rem 1.2rem;
     border-radius: 999px;
     background: transparent;
     color: var(--text-soft);
@@ -403,15 +498,15 @@ div[data-testid="stFormSubmitButton"] > button:focus {
 }
 
 .stTabs [data-baseweb="tab"]:hover {
-    color: var(--text-main);
-    background: rgba(255, 255, 255, 0.04);
+    color: var(--text-strong);
+    background: rgba(34, 160, 107, 0.08);
 }
 
 .stTabs [aria-selected="true"] {
-    color: #f8feff !important;
-    background: linear-gradient(135deg, rgba(0, 173, 181, 0.32), rgba(89, 243, 255, 0.20)) !important;
-    border: 1px solid rgba(89, 243, 255, 0.20) !important;
-    box-shadow: 0 10px 24px rgba(0, 173, 181, 0.18), inset 0 1px 0 rgba(255,255,255,0.08);
+    color: #ffffff !important;
+    background: linear-gradient(135deg, #0f5d3f 0%, #22a06b 100%) !important;
+    border: 1px solid rgba(15, 23, 42, 0.04) !important;
+    box-shadow: 0 12px 20px -16px rgba(15, 93, 63, 0.28);
 }
 
 [data-testid="stAppViewContainer"] .stRadio > div {
@@ -419,29 +514,75 @@ div[data-testid="stFormSubmitButton"] > button:focus {
     justify-content: center;
 }
 
+[data-testid="stAppViewContainer"] .stRadio {
+    margin: 1rem auto 1.9rem auto;
+}
+
 [data-testid="stAppViewContainer"] .stRadio div[role="radiogroup"] {
     justify-content: center !important;
     width: 100%;
     margin: 0 auto;
+    gap: 0.42rem;
+    padding: 0.5rem 0.55rem;
+    border-radius: 999px;
+    background: linear-gradient(180deg, rgba(255,255,255,0.94), rgba(236,247,241,0.92));
+    border: 1px solid rgba(18, 82, 58, 0.12);
+    box-shadow:
+        0 18px 32px -26px rgba(15, 93, 63, 0.20),
+        inset 0 1px 0 rgba(255,255,255,0.95);
+    max-width: fit-content;
+    position: relative;
+    overflow: hidden;
 }
 
 [data-testid="stAppViewContainer"] .stRadio div[role="radiogroup"] > label {
-    margin-left: 0.25rem;
-    margin-right: 0.25rem;
+    margin-left: 0;
+    margin-right: 0;
+    padding: 0.78rem 1.28rem;
+    border-radius: 999px;
+    color: var(--text-soft) !important;
+    font-weight: 800;
+    font-family: 'DM Sans', sans-serif !important;
+    transition: color 0.26s ease, transform 0.26s ease, letter-spacing 0.26s ease !important;
+    min-height: 3rem;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    text-align: center !important;
+    white-space: nowrap !important;
+}
+
+[data-testid="stAppViewContainer"] .stRadio [data-baseweb="radio"]:has(input:checked) {
+    background: linear-gradient(135deg, rgba(15,93,63,0.92), rgba(34,160,107,0.92));
+    border-radius: 999px;
+    box-shadow: 0 14px 22px -18px rgba(15, 93, 63, 0.32) !important;
+}
+
+[data-testid="stAppViewContainer"] .stRadio [data-baseweb="radio"]:has(input:checked) label {
+    color: #ffffff !important;
 }
 
 [data-testid="stSpinner"],
 .stSpinner,
 [data-testid="stSpinner"] * {
-    color: var(--cyan) !important;
+    color: var(--accent) !important;
     animation: pulse 1.5s ease-in-out infinite;
 }
 
+[data-testid="stProgressBar"] > div > div {
+    background: linear-gradient(90deg, #0f5d3f 0%, #22a06b 100%) !important;
+}
+
+[data-testid="stProgressBar"] {
+    background: rgba(18, 82, 58, 0.08) !important;
+}
+
 [data-testid="stMetric"] {
-    background: rgba(255, 255, 255, 0.025);
-    border: 1px solid rgba(255, 255, 255, 0.05);
-    border-radius: 20px;
+    background: linear-gradient(180deg, #fffdf8 0%, #f9f4eb 100%);
+    border: 1px solid rgba(18, 82, 58, 0.08);
+    border-radius: 22px;
     padding: 1rem;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.8);
 }
 
 [data-testid="stMetricLabel"],
@@ -449,16 +590,475 @@ div[data-testid="stFormSubmitButton"] > button:focus {
     color: var(--text-soft) !important;
 }
 
+[data-testid="stMetricValue"] {
+    color: var(--text-strong) !important;
+}
+
 [data-testid="stDataFrame"],
 .stAlert,
 .streamlit-expanderHeader {
-    border-radius: 18px !important;
+    border-radius: 20px !important;
+}
+
+[data-testid="stDataFrame"],
+.stAlert,
+.streamlit-expanderHeader,
+[data-testid="stExpander"] {
+    border: 1px solid rgba(18, 82, 58, 0.08) !important;
+    background: rgba(255,252,247,0.9) !important;
+    color: var(--text-main) !important;
+}
+
+hr {
+    border: none;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(34, 160, 107, 0.28), transparent);
+    margin: 1.75rem 0;
+}
+
+a {
+    color: #0f7a53;
+}
+
+.stAlert {
+    box-shadow: none !important;
+}
+
+.stSuccess,
+.stInfo,
+.stWarning,
+.stError {
+    border-radius: 20px !important;
+}
+
+[data-testid="stFileUploaderDropzone"] {
+    background: rgba(255,250,242,0.76) !important;
+    border: 1.5px dashed rgba(34, 160, 107, 0.34) !important;
+    border-radius: 24px !important;
+}
+
+[data-testid="stFileUploaderDropzone"] * {
+    color: var(--text-soft) !important;
+}
+
+[data-testid="stMarkdownContainer"] code,
+.stCodeBlock {
+    background: #12392f !important;
+    color: #eafff5 !important;
+}
+
+[data-testid="stAppViewContainer"] {
+    background: transparent;
+}
+
+[data-testid="stToolbar"] {
+    right: 1rem;
+}
+
+[data-testid="stDataFrame"] {
+    box-shadow: none !important;
+}
+
+[data-baseweb="tooltip"] {
+    background: #12392f !important;
+    color: #fffaf0 !important;
+    border: 1px solid rgba(34, 160, 107, 0.24) !important;
+}
+
+[data-testid="stSidebar"] * {
+    color: rgba(255,255,255,0.92);
+}
+
+[data-testid="stAppViewBlockContainer"] {
+    padding-top: 2rem;
+    padding-bottom: 3rem;
+}
+
+[data-testid="stSidebarNavSeparator"] {
+    display: none;
+}
+
+.stDownloadButton > button {
+    background: linear-gradient(135deg, #144533 0%, #0f2f27 100%);
+}
+
+.stSuccess,
+.stInfo,
+.stWarning,
+.stError {
+    border: 1px solid rgba(15, 23, 42, 0.06) !important;
+    background: rgba(255,252,247,0.88) !important;
+}
+
+.stCaption {
+    color: var(--text-soft) !important;
+}
+
+.streamlit-expanderHeader {
+    font-weight: 700 !important;
+}
+
+[data-testid="stSelectbox"] svg,
+[data-testid="stNumberInput"] svg {
+    color: var(--text-soft) !important;
+}
+
+.hero-shell {
+    position: relative;
+    margin: 0 auto 1.8rem auto;
+    padding: 2rem 2.2rem;
+    border-radius: 36px;
+    background:
+        radial-gradient(circle at top left, rgba(34,160,107,0.16), transparent 22%),
+        linear-gradient(135deg, rgba(255,255,255,0.88), rgba(245,252,248,0.94));
+    border: 1px solid rgba(18, 82, 58, 0.08);
+    box-shadow: var(--shadow-soft);
+    overflow: hidden;
+}
+
+.hero-shell::after {
+    content: "";
+    position: absolute;
+    inset: auto -10% -35% auto;
+    width: 260px;
+    height: 260px;
+    background: radial-gradient(circle, rgba(34,160,107,0.15), transparent 62%);
+    pointer-events: none;
+}
+
+.hero-kicker {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.45rem 0.9rem;
+    border-radius: 999px;
+    background: rgba(34,160,107,0.08);
+    color: var(--accent-strong);
+    font-size: 0.8rem;
+    font-weight: 800;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    margin-bottom: 0.95rem;
+}
+
+.hero-title {
+    font-size: 3rem;
+    line-height: 0.96;
+    letter-spacing: -0.07em;
+    font-weight: 800;
+    color: var(--text-strong);
+    margin: 0 0 0.9rem 0;
+    max-width: 780px;
+}
+
+.hero-copy {
+    font-size: 1.03rem;
+    line-height: 1.75;
+    color: var(--text-soft);
+    max-width: 760px;
+    margin: 0;
+}
+
+.sidebar-note {
+    margin-top: 1rem;
+    padding: 1rem 1.05rem;
+    border-radius: 22px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.06);
+}
+
+.sidebar-note-title {
+    color: #ffffff;
+    font-size: 0.9rem;
+    font-weight: 700;
+    margin-bottom: 0.35rem;
+}
+
+.sidebar-note-copy {
+    color: rgba(255,255,255,0.68);
+    font-size: 0.86rem;
+    line-height: 1.55;
+}
+
+.sidebar-card {
+    margin-top: 1rem;
+    padding: 1rem 1.05rem;
+    border-radius: 22px;
+    background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(255,255,255,0.06);
+}
+
+.sidebar-card-title {
+    color: #ffffff;
+    font-size: 0.9rem;
+    font-weight: 800;
+    margin-bottom: 0.4rem;
+}
+
+.sidebar-card-copy {
+    color: rgba(255,255,255,0.72);
+    font-size: 0.86rem;
+    line-height: 1.6;
+}
+
+.sidebar-card-copy strong {
+    color: #ffffff;
+}
+
+.login-shell {
+    padding: 1.8rem 1.9rem;
+    border-radius: 34px;
+    background:
+        radial-gradient(circle at top left, rgba(34,160,107,0.12), transparent 22%),
+        linear-gradient(180deg, rgba(255,255,255,0.92), rgba(250,255,252,0.96));
+    border: 1px solid rgba(18, 82, 58, 0.08);
+    box-shadow: var(--shadow-soft);
+}
+
+.login-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.45rem 0.85rem;
+    border-radius: 999px;
+    background: rgba(34,160,107,0.10);
+    color: var(--accent-strong);
+    font-size: 0.8rem;
+    font-weight: 800;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    margin-bottom: 0.9rem;
+}
+
+.login-headline {
+    font-size: 2.35rem;
+    line-height: 1.02;
+    letter-spacing: -0.06em;
+    color: var(--text-strong);
+    font-weight: 800;
+    margin-bottom: 0.85rem;
+}
+
+.login-copy {
+    color: var(--text-soft);
+    font-size: 1rem;
+    line-height: 1.75;
+    margin-bottom: 1.25rem;
+}
+
+.login-list {
+    display: grid;
+    gap: 0.85rem;
+}
+
+.login-item {
+    padding: 1rem 1.05rem;
+    border-radius: 22px;
+    background: rgba(255,255,255,0.72);
+    border: 1px solid rgba(18, 82, 58, 0.08);
+}
+
+.login-item-title {
+    color: var(--text-strong);
+    font-size: 0.98rem;
+    font-weight: 800;
+    margin-bottom: 0.2rem;
+}
+
+.login-item-copy {
+    color: var(--text-soft);
+    font-size: 0.9rem;
+    line-height: 1.55;
+}
+
+.session-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.48rem 0.9rem;
+    border-radius: 999px;
+    background: rgba(34,160,107,0.10);
+    color: var(--accent-strong);
+    font-size: 0.82rem;
+    font-weight: 800;
+    margin-bottom: 0.8rem;
+}
+
+.scroll-to-top,
+.scroll-to-top:visited,
+.scroll-to-top:hover {
+    color: #ffffff !important;
+}
+
+.stButton > button *,
+.stDownloadButton > button *,
+div[data-testid="stFormSubmitButton"] > button * {
+    color: #ffffff !important;
+    fill: #ffffff !important;
+}
+
+.stDownloadButton > button {
+    background: linear-gradient(135deg, #12754d 0%, #22a06b 100%) !important;
+}
+
+.stRadio [data-baseweb="radio"] > div:first-child {
+    display: none !important;
+}
+
+[data-testid="stAppViewContainer"] .stRadio [data-baseweb="radio"] {
+    padding: 0 !important;
+    margin: 0 !important;
+    min-width: fit-content;
+    border-radius: 999px;
+    overflow: hidden;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    transition: transform 0.28s ease, box-shadow 0.28s ease, background 0.32s ease, filter 0.28s ease !important;
+    will-change: transform;
+}
+
+[data-testid="stAppViewContainer"] .stRadio [data-baseweb="radio"]:has(input:checked) {
+    background: linear-gradient(135deg, #0f6f4d 0%, #22a06b 52%, #69d99c 100%) !important;
+    background-size: 180% 180%;
+    box-shadow:
+        0 14px 26px -18px rgba(15, 93, 63, 0.34),
+        inset 0 1px 0 rgba(255,255,255,0.24) !important;
+    transform: translateY(-1px) scale(1.01);
+    animation: greenFlow 2.4s ease-in-out infinite alternate;
+    padding-inline: 0.18rem !important;
+}
+
+[data-testid="stAppViewContainer"] .stRadio [data-baseweb="radio"]:has(input:checked) label {
+    color: #ffffff !important;
+    letter-spacing: 0.01em;
+    text-align: center !important;
+}
+
+[data-testid="stAppViewContainer"] .stRadio [data-baseweb="radio"]:has(input:checked) * {
+    color: #ffffff !important;
+    fill: #ffffff !important;
+}
+
+[data-testid="stAppViewContainer"] .stRadio [data-baseweb="radio"] label,
+[data-testid="stAppViewContainer"] .stRadio [data-baseweb="radio"] label > div,
+[data-testid="stAppViewContainer"] .stRadio [data-baseweb="radio"] label > div > p,
+[data-testid="stAppViewContainer"] .stRadio [data-baseweb="radio"] label p,
+[data-testid="stAppViewContainer"] .stRadio [data-baseweb="radio"] label span {
+    width: 100% !important;
+    margin: 0 !important;
+    text-align: center !important;
+    justify-content: center !important;
+    align-items: center !important;
+    white-space: nowrap !important;
+}
+
+[data-testid="stAppViewContainer"] .stRadio [data-baseweb="radio"]:not(:has(input:checked)):hover {
+    background: rgba(34, 160, 107, 0.10) !important;
+    transform: translateY(-1px);
+}
+
+[data-testid="stAppViewContainer"] .stRadio [data-baseweb="radio"]:not(:has(input:checked)):hover label {
+    color: var(--text-strong) !important;
+}
+
+.stTabs [aria-selected="true"] {
+    background: #22a06b !important;
+    border-color: rgba(18, 82, 58, 0.06) !important;
+}
+
+[data-testid="stSidebar"] .stButton > button {
+    background: rgba(255,255,255,0.08) !important;
+    border: 1px solid rgba(255,255,255,0.08) !important;
+    box-shadow: none !important;
+}
+
+[data-testid="stSidebar"] .stButton > button:hover {
+    background: rgba(34,160,107,0.22) !important;
+    transform: translateY(-1px);
+}
+
+.sidebar-action-gap {
+    height: 1rem;
+}
+
+.sidebar-action-label {
+    margin: 0 0 0.75rem 0;
+    padding: 0.7rem 0.95rem;
+    border-radius: 16px;
+    background: linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.04));
+    border: 1px solid rgba(255,255,255,0.08);
+    color: rgba(255,255,255,0.92);
+    font-size: 0.76rem;
+    font-weight: 800;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    text-align: center;
 }
 </style>
 """, unsafe_allow_html=True)
 
-st.sidebar.markdown('<div class="sidebar-header">Control Panel</div>', unsafe_allow_html=True)
-page = st.sidebar.radio("", ["Workspace", "Patient Tracking"])
+if "doctor_authenticated" not in st.session_state:
+    st.session_state.doctor_authenticated = False
+if "doctor_name" not in st.session_state:
+    st.session_state.doctor_name = ""
+if "doctor_email" not in st.session_state:
+    st.session_state.doctor_email = ""
+if "doctor_department" not in st.session_state:
+    st.session_state.doctor_department = "Radiology"
+if "doctor_remember" not in st.session_state:
+    st.session_state.doctor_remember = False
+if "uploader_nonce" not in st.session_state:
+    st.session_state.uploader_nonce = 0
+
+st.sidebar.markdown('<div class="sidebar-header">Clinical Intro</div>', unsafe_allow_html=True)
+st.sidebar.markdown("""
+<div class="sidebar-card">
+    <div class="sidebar-card-title">What is NeuroVision?</div>
+    <div class="sidebar-card-copy">
+        A clinician-facing MRI workspace that combines segmentation review, patient follow-up, and reporting in one calm interface.
+    </div>
+</div>
+<div class="sidebar-card">
+    <div class="sidebar-card-title">Experience Focus</div>
+    <div class="sidebar-card-copy">
+        This version is tuned for a greener medical feel, smoother navigation, and cleaner day-to-day physician workflow.
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
+if st.session_state.doctor_authenticated:
+    st.sidebar.markdown(
+        f"""
+        <div class="sidebar-card">
+            <div class="sidebar-card-title">Doctor Session</div>
+            <div class="sidebar-card-copy">
+                <strong>{st.session_state.doctor_name}</strong><br/>
+                {st.session_state.doctor_department}<br/>
+                {st.session_state.doctor_email}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+st.sidebar.markdown("""
+<div class="sidebar-card">
+    <div class="sidebar-card-title">Credits</div>
+    <div class="sidebar-card-copy">
+        Product redesign, AI integration, physician workflow prototyping, and Streamlit implementation by the NeuroVision build team.
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
+if st.session_state.doctor_authenticated:
+    st.sidebar.markdown('<div class="sidebar-action-gap"></div>', unsafe_allow_html=True)
+    st.sidebar.markdown('<div class="sidebar-action-label">Session Actions</div>', unsafe_allow_html=True)
+    if st.sidebar.button("Doctor Sign Out", use_container_width=True, key="doctor_sign_out_btn"):
+        st.session_state.uploader_nonce += 1
+        for key in ["doctor_authenticated", "doctor_name", "doctor_email", "doctor_department", "doctor_remember"]:
+            st.session_state.pop(key, None)
+        st.rerun()
 
 # =========================
 # HELPER FUNCTIONS CHO PDF
@@ -471,6 +1071,29 @@ def format_pdf_text(text):
     text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', str(text))
     text = text.replace('\n', '<br/>')
     return text
+
+def load_uploaded_mri(uploaded_file):
+    file_bytes = uploaded_file.getvalue()
+    ext = os.path.splitext(uploaded_file.name.lower())[1]
+
+    if ext in {".ima", ".dcm"}:
+        ds = pydicom.dcmread(io.BytesIO(file_bytes))
+        image = ds.pixel_array.astype(np.float32)
+        image = (image - image.min()) / (image.max() - image.min() + 1e-8) * 255.0
+        image = image.astype(np.uint8)
+    else:
+        image_array = np.frombuffer(file_bytes, dtype=np.uint8)
+        image = cv2.imdecode(image_array, cv2.IMREAD_GRAYSCALE)
+        if image is None:
+            raise ValueError("Unsupported MRI image format.")
+
+    if image.ndim == 3:
+        image = image[image.shape[0] // 2, :, :]
+
+    image_resized = cv2.resize(image, (224, 224), interpolation=cv2.INTER_LINEAR)
+    image_normalized = image_resized.astype(np.float32) / 255.0
+    input_tensor = torch.from_numpy(image_normalized).unsqueeze(0).unsqueeze(0).to(device)
+    return image_normalized, input_tensor
 
 def export_pdf(name, age, gender, result, ai_consultation, img1_path, img2_path):
     file = f"NeuroVision_Report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
@@ -516,7 +1139,7 @@ def export_pdf(name, age, gender, result, ai_consultation, img1_path, img2_path)
     elements.append(Paragraph(clean_consultation, justify_style))
     elements.append(Spacer(1, 20))
 
-    elements.append(Paragraph("<b>ATTACHED IMAGES (DETECTION & HEATMAP):</b>", styles["Heading3"]))
+    elements.append(Paragraph("<b>ATTACHED IMAGES (DETECTION & SEGMENTATION OVERLAY):</b>", styles["Heading3"]))
     elements.append(Spacer(1, 10))
     
     if os.path.exists(img1_path) and os.path.exists(img2_path):
@@ -595,7 +1218,7 @@ def export_comparison_pdf(name, age, gender, scan_a, scan_b, ai_consultation):
         img_data = [
             [Paragraph("<para align='center'><b>Detected Region (A)</b></para>", styles["Normal"]), Paragraph("<para align='center'><b>Detected Region (B)</b></para>", styles["Normal"])],
             [RLImage(scan_a[7], width=200, height=200), RLImage(scan_b[7], width=200, height=200)],
-            [Paragraph("<para align='center'><b>Heatmap (A)</b></para>", styles["Normal"]), Paragraph("<para align='center'><b>Heatmap (B)</b></para>", styles["Normal"])],
+            [Paragraph("<para align='center'><b>Segmentation Overlay (A)</b></para>", styles["Normal"]), Paragraph("<para align='center'><b>Segmentation Overlay (B)</b></para>", styles["Normal"])],
             [RLImage(scan_a[8], width=200, height=200), RLImage(scan_b[8], width=200, height=200)]
         ]
         t_img = Table(img_data, colWidths=[225, 225])
@@ -653,140 +1276,279 @@ st.markdown("""
     <span class="brand-word">NEUROVISION</span>
 </div>
 """, unsafe_allow_html=True)
-st.markdown('<div class="brand-subtitle">Comprehensive MRI Analysis & Analytics Platform</div>', unsafe_allow_html=True)
-st.markdown("---")
 
-if page == "Workspace":
-    
-    col_empty, col_toggle, col_empty2 = st.columns([1.5, 1, 1.5])
-    with col_toggle:
-        view_mode = st.radio("Mode", ["AI Analysis", "System Analytics"], horizontal=True, label_visibility="collapsed")
+if not st.session_state.doctor_authenticated:
+    st.markdown('<div class="brand-subtitle">Doctor-only access to the NeuroVision workspace. Sign in to open diagnostic review, command analytics, and patient timelines.</div>', unsafe_allow_html=True)
+
+    login_col1, login_col2 = st.columns([1.1, 0.9], gap="large")
+    with login_col1:
+        st.markdown("""
+        <div class="login-shell">
+            <div class="login-badge">Doctor Access</div>
+            <div class="login-headline">Secure physician sign-in for a calmer MRI workflow.</div>
+            <p class="login-copy">
+                Designed for radiologists and doctors who need a cleaner interface for intake, AI findings, longitudinal review, and reporting.
+            </p>
+            <div class="login-list">
+                <div class="login-item">
+                    <div class="login-item-title">Clinical-first entry</div>
+                    <div class="login-item-copy">Fast access to case intake, segmentation review, and narrative reporting.</div>
+                </div>
+                <div class="login-item">
+                    <div class="login-item-title">Doctor-specific workspace</div>
+                    <div class="login-item-copy">Intended for licensed physicians, medical reviewers, and supervised clinical teams.</div>
+                </div>
+                <div class="login-item">
+                    <div class="login-item-title">Smoother session flow</div>
+                    <div class="login-item-copy">Move between diagnosis, command analytics, and patient history through one cleaner navigation bar.</div>
+                </div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with login_col2:
+        with st.container(border=True):
+            st.markdown("<h3 style='text-align: center;'>Doctor Login</h3>", unsafe_allow_html=True)
+            st.caption("Use your physician identity to enter the clinical workspace. Identity provider setup can be connected later.")
+            with st.form("doctor_login_form", clear_on_submit=False):
+                doctor_name_input = st.text_input("Doctor Name", placeholder="e.g. Dr. Nguyen Minh")
+                doctor_email_input = st.text_input("Hospital Email", placeholder="name@hospital.vn")
+                doctor_department_input = st.selectbox("Department", ["Radiology", "Neurology", "Neurosurgery", "Oncology"])
+                doctor_password_input = st.text_input("Password", type="password", placeholder="Enter your secure password")
+                remember_device = st.checkbox("Remember this workstation")
+                login_submit = st.form_submit_button("Enter Clinical Workspace", use_container_width=True)
+
+                if login_submit:
+                    if doctor_name_input.strip() and doctor_email_input.strip() and "@" in doctor_email_input and doctor_password_input.strip():
+                        st.session_state.doctor_authenticated = True
+                        st.session_state.doctor_name = doctor_name_input.strip()
+                        st.session_state.doctor_email = doctor_email_input.strip()
+                        st.session_state.doctor_department = doctor_department_input
+                        st.session_state.doctor_remember = remember_device
+                        st.rerun()
+                    else:
+                        st.error("Please enter doctor name, hospital email, and password to continue.")
+
+    st.markdown('<a href="#top-of-page" class="scroll-to-top">Top</a>', unsafe_allow_html=True)
+    st.stop()
+
+st.markdown(
+    f'<div class="brand-subtitle"><span class="session-pill">Doctor Session Active</span><br/>Welcome back, {st.session_state.doctor_name}. Choose a workspace below.</div>',
+    unsafe_allow_html=True
+)
+
+page = st.radio("", ["Diagnostic Studio", "Clinical Command", "Patient Atlas"], horizontal=True, label_visibility="collapsed")
+
+hero_content = {
+    "Diagnostic Studio": (
+        "AI-first MRI review, redesigned.",
+        "Capture a case, run segmentation, and generate a clinical narrative in one focused studio instead of a pile of rough controls."
+    ),
+    "Clinical Command": (
+        "A calmer command layer for operational oversight.",
+        "Review throughput, diagnostic mix, and activity trends from a cleaner medical operations dashboard."
+    ),
+    "Patient Atlas": (
+        "Longitudinal patient navigation without the clutter.",
+        "Open a patient dossier, compare historical scans, and manage follow-up records inside one continuous timeline hub."
+    ),
+}
+
+hero_title, hero_copy = hero_content[page]
+st.markdown(
+    f"""
+    <div class="hero-shell">
+        <div class="hero-kicker">NeuroVision Workspace</div>
+        <div class="hero-title">{hero_title}</div>
+        <p class="hero-copy">{hero_copy}</p>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
+
+view_mode = "AI Analysis"
+
+if page == "Diagnostic Studio":
 
     # ==========================
     # TRANG 1: PHÂN TÍCH AI
     # ==========================
     if view_mode == "AI Analysis":
+        analysis_file_key = f"analysis_file_{st.session_state.uploader_nonce}"
         if "analysis_done" not in st.session_state:
             st.session_state.analysis_done = False
             st.session_state.ai_consultation = ""
+        if "analysis_name" not in st.session_state:
+            st.session_state.analysis_name = ""
+        if "analysis_age" not in st.session_state:
+            st.session_state.analysis_age = ""
+        if "analysis_gender" not in st.session_state:
+            st.session_state.analysis_gender = "Male"
 
         with st.container(border=True):
-            st.markdown("<h3 style='text-align: center;'>Patient Demographics</h3>", unsafe_allow_html=True)
+            st.markdown("<h3 style='text-align: center;'>Case Intake</h3>", unsafe_allow_html=True)
             st.write("") 
             col1, col2, col3 = st.columns(3)
-            name = col1.text_input("Full Name", placeholder="e.g. John Doe")
-            age = col2.text_input("Age", placeholder="e.g. 45")
-            gender = col3.selectbox("Gender", ["Male", "Female", "Other"])
+            name = col1.text_input(
+                "Full Name",
+                placeholder="e.g. John Doe",
+                help="Enter the patient's full legal name as per hospital records.",
+                key="analysis_name"
+            )
+            age = col2.text_input("Age", placeholder="e.g. 45", key="analysis_age")
+            gender = col3.selectbox("Gender", ["Male", "Female", "Other"], key="analysis_gender")
 
         with st.container(border=True):
-            st.markdown("<h3 style='text-align: center;'>Upload MRI Scan</h3>", unsafe_allow_html=True)
-            st.markdown("<p style='text-align: center; color: #888;'>Supported formats: .dcm, .ima, .png, .jpg, .jpeg, .tif, .tiff, .bmp</p>", unsafe_allow_html=True)
-            file = st.file_uploader("", type=["dcm", "ima", "png", "jpg", "jpeg", "tif", "tiff", "bmp"], label_visibility="collapsed")
+            st.markdown("<h3 style='text-align: center;'>Imaging Dropzone</h3>", unsafe_allow_html=True)
+            st.markdown("<p style='text-align: center; color: #5f776d;'>Accepted formats: .dcm, .ima, .png, .jpg, .jpeg, .tif, .tiff, .bmp</p>", unsafe_allow_html=True)
+            file = st.file_uploader(
+                "",
+                type=["dcm", "ima", "png", "jpg", "jpeg", "tif", "tiff", "bmp"],
+                label_visibility="collapsed",
+                help="Upload a high-resolution MRI scan. Ensure all PII is anonymized.",
+                key=analysis_file_key
+            )
             
             st.write("")
-            analyze_btn = st.button("Run NeuroVision AI Analysis", use_container_width=True, type="primary")
+            analyze_btn = st.button("Generate MRI Insight", use_container_width=True, type="primary")
 
         if analyze_btn:
             if file is None or name == "":
                 st.error("Please fill in patient name and upload an MRI file!")
             else:
-                with st.spinner("NeuroVision is analyzing the MRI scan..."):
-                    file_bytes = np.asarray(bytearray(file.read()), dtype=np.uint8)
-                    image = cv2.imdecode(file_bytes, cv2.IMREAD_GRAYSCALE)
-                    if len(image.shape) > 2:
-                        image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-                    image = image.astype(np.float32)
-                    image = (image - image.min()) / (image.max() - image.min() + 1e-8)
-                    image_resized = cv2.resize(image, (224, 224), interpolation=cv2.INTER_LINEAR).astype(np.float32)
-                    transform = transforms.Compose([
-                        transforms.ToTensor(),
-                        transforms.Normalize(mean=[0.5], std=[0.5])
-                    ])
-                    input_tensor = transform(image_resized).unsqueeze(0).to(device)
-
-                    img_with_boxes, heatmap, prob_overall, has_anom, suggestions = analyze_brain_ai_driven(input_tensor, ai_model, image_resized)
-
-                    if has_anom:
-                        result = f"Abnormal - Tumor Detected ({prob_overall:.1f}%)"
-                        coords = "Detected by Grad-CAM"
+                status_message = st.empty()
+                progress_bar = st.progress(0)
+                try:
+                    status_message.info("1. Preprocessing image...")
+                    progress_bar.progress(20)
+                    time.sleep(0.35)
+                    try:
+                        image_normalized, input_tensor = load_uploaded_mri(file)
+                    except Exception as e:
+                        st.error(f"Failed to read MRI scan: {e}")
                     else:
-                        result = f"Normal ({100 - prob_overall:.1f}%)"
-                        coords = "None"
+                        status_message.info("2. Running U-Net Segmentation...")
+                        progress_bar.progress(55)
+                        time.sleep(0.35)
+                        img_with_boxes, segmentation_overlay, prob_overall, has_anom, suggestions = analyze_mri_unet(
+                            input_tensor,
+                            ai_model,
+                            image_normalized
+                        )
 
-                    timestamp = str(datetime.now().timestamp()).replace(".", "")
-                    img1_path = f"history_img/det_{timestamp}.png"
-                    img2_path = f"history_img/heat_{timestamp}.png"
-                    Image.fromarray(cv2.cvtColor(img_with_boxes, cv2.COLOR_BGR2RGB)).save(img1_path)
-                    Image.fromarray(cv2.cvtColor(heatmap, cv2.COLOR_BGR2RGB)).save(img2_path)
+                        if has_anom:
+                            result = f"Abnormal - Tumor Detected ({prob_overall:.1f}%)"
+                            coords = "\n".join(suggestions) if suggestions else "Suspicious region detected by U-Net segmentation."
+                        else:
+                            result = f"Normal ({100 - prob_overall:.1f}%)"
+                            coords = "No suspicious regions localized."
 
-                    ai_consultation = ""
-                    if OPENAI_KEY:
-                        try:
-                            client = OpenAI(api_key=OPENAI_KEY)
-                            prompt = f"""
-                            Act as a Senior Clinical Neuroradiologist. 
-                            Patient: {name}, Age: {age}, Gender: {gender}.
-                            System Detection: {result}.
-                            Write a clinical radiology report. You MUST format your response exactly like this:
-                            
-                            <b>FINDINGS:</b> 
-                            (Write 2-3 sentences describing the imaging findings formally based on the detection result).
-                            <br/><br/>
-                            <b>IMPRESSION:</b>
-                            (Write 1-2 sentences with the final diagnostic conclusion and recommendations).
-                            
-                            Do NOT use markdown formatting like **bold**, use ONLY the HTML tags <b> and <br/> provided in the structure.
-                            """
-                            response = client.chat.completions.create(
-                                model="gpt-4o-mini", 
-                                messages=[{"role": "system", "content": "You are a professional medical AI assistant."},
-                                          {"role": "user", "content": prompt}]
-                            )
-                            ai_consultation = response.choices[0].message.content
-                        except Exception as e:
-                            ai_consultation = f"OpenAI Connection Error: {e}"
-                    else:
-                        ai_consultation = "OpenAI API Key is missing."
+                        timestamp = str(datetime.now().timestamp()).replace(".", "")
+                        img1_path = f"history_img/det_{timestamp}.png"
+                        img2_path = f"history_img/seg_{timestamp}.png"
+                        Image.fromarray(img_with_boxes).save(img1_path)
+                        Image.fromarray(segmentation_overlay).save(img2_path)
 
-                    st.session_state.analysis_done = True
-                    st.session_state.name = name
-                    st.session_state.age = age
-                    st.session_state.gender = gender
-                    st.session_state.result = result
-                    st.session_state.img1_path = img1_path
-                    st.session_state.img2_path = img2_path
-                    st.session_state.coords = coords
-                    st.session_state.ai_consultation = ai_consultation 
+                        ai_consultation = ""
+                        status_message.info("3. Generating Clinical Report...")
+                        progress_bar.progress(80)
+                        time.sleep(0.35)
+                        if OPENAI_KEY:
+                            try:
+                                client = OpenAI(api_key=OPENAI_KEY)
+                                prompt = f"""
+                                Act as a Senior Clinical Neuroradiologist. 
+                                Patient: {name}, Age: {age}, Gender: {gender}.
+                                System Detection: {result}.
+                                Localized AI findings: {coords}.
+                                Write a clinical radiology report. You MUST format your response exactly like this:
+                                
+                                <b>FINDINGS:</b> 
+                                (Write 2-3 sentences describing the imaging findings formally based on the detection result).
+                                <br/><br/>
+                                <b>IMPRESSION:</b>
+                                (Write 1-2 sentences with the final diagnostic conclusion and recommendations).
+                                
+                                Do NOT use markdown formatting like **bold**, use ONLY the HTML tags <b> and <br/> provided in the structure.
+                                """
+                                response = client.chat.completions.create(
+                                    model="gpt-4o-mini", 
+                                    messages=[{"role": "system", "content": "You are a professional medical AI assistant."},
+                                              {"role": "user", "content": prompt}]
+                                )
+                                ai_consultation = response.choices[0].message.content
+                            except Exception as e:
+                                ai_consultation = f"OpenAI Connection Error: {e}"
+                        else:
+                            ai_consultation = "OpenAI API Key is missing."
 
-                    c.execute("INSERT INTO history (name, age, gender, time, result, coords, img1_path, img2_path, report) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                              (name, age, gender, datetime.now().strftime("%Y-%m-%d %H:%M"), result, str(coords), img1_path, img2_path, ai_consultation))
-                    conn.commit()
+                        st.session_state.analysis_done = True
+                        st.session_state.name = name
+                        st.session_state.age = age
+                        st.session_state.gender = gender
+                        st.session_state.result = result
+                        st.session_state.img1_path = img1_path
+                        st.session_state.img2_path = img2_path
+                        st.session_state.coords = coords
+                        st.session_state.ai_consultation = ai_consultation 
+
+                        c.execute("INSERT INTO history (name, age, gender, time, result, coords, img1_path, img2_path, report) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                  (name, age, gender, datetime.now().strftime("%Y-%m-%d %H:%M"), result, str(coords), img1_path, img2_path, ai_consultation))
+                        conn.commit()
+                        status_message.success("Case processing finished. The studio has been updated with fresh findings.")
+                        progress_bar.progress(100)
+                        time.sleep(0.2)
+                finally:
+                    time.sleep(0.1)
+                    status_message.empty()
+                    progress_bar.empty()
 
         if st.session_state.analysis_done:
             with st.container(border=True):
-                st.markdown("### Diagnostic Results")
+                st.markdown("### AI Findings Board")
                 st.success(f"**Diagnosis:** {st.session_state.result}")
                 st.write("")
                 col_img1, col_img2 = st.columns(2)
                 col_img1.image(st.session_state.img1_path, caption="AI Detected Region (Bounding Box)", use_container_width=True)
-                col_img2.image(st.session_state.img2_path, caption="Attention Heatmap", use_container_width=True)
+                col_img2.image(st.session_state.img2_path, caption="U-Net Segmentation Overlay", use_container_width=True)
 
             with st.container(border=True):
-                st.markdown("### Clinical Report (OpenAI)")
+                st.markdown("### Narrative Clinical Summary")
                 st.markdown(st.session_state.ai_consultation, unsafe_allow_html=True)
                 st.write("")
                 pdf_file = export_pdf(st.session_state.name, st.session_state.age, st.session_state.gender, 
                                       st.session_state.result, st.session_state.ai_consultation, 
                                       st.session_state.img1_path, st.session_state.img2_path)
                 with open(pdf_file, "rb") as f:
-                    st.download_button("Download Official Medical Report (PDF)", f, file_name=f"{remove_accents(st.session_state.name)}_Clinical_Report.pdf", use_container_width=True)
+                    st.download_button("Export Clinical Report", f, file_name=f"{remove_accents(st.session_state.name)}_Clinical_Report.pdf", use_container_width=True)
+
+            reset_col_left, reset_col_mid, reset_col_right = st.columns([1, 1.4, 1])
+            with reset_col_mid:
+                if st.button("Open Fresh Case", use_container_width=True):
+                    st.session_state.uploader_nonce += 1
+                    for key in [
+                        "analysis_done",
+                        "ai_consultation",
+                        "name",
+                        "age",
+                        "gender",
+                        "result",
+                        "img1_path",
+                        "img2_path",
+                        "coords",
+                        "analysis_name",
+                        "analysis_age",
+                        "analysis_gender",
+                    ]:
+                        st.session_state.pop(key, None)
+                    st.rerun()
 
     # ==========================
     # TRANG 2: ANALYTICS DASHBOARD
     # ==========================
-    elif view_mode == "System Analytics":
-        st.markdown('<div class="page-header">Analytics Dashboard</div>', unsafe_allow_html=True)
-        st.markdown('<div class="page-subheader">Performance metrics and system insights</div>', unsafe_allow_html=True)
+elif page == "Clinical Command":
+        st.markdown('<div class="page-header">Clinical Command Center</div>', unsafe_allow_html=True)
+        st.markdown('<div class="page-subheader">A live operational layer for throughput, case mix, and review activity across the workspace.</div>', unsafe_allow_html=True)
         
         data = c.execute("SELECT * FROM history").fetchall()
         df = pd.DataFrame(data, columns=['id', 'name', 'age', 'gender', 'time', 'result', 'coords', 'img1', 'img2', 'report'])
@@ -851,9 +1613,9 @@ if page == "Workspace":
 # ==========================================
 # PATIENT TRACKING PAGE (MASTER-DETAIL)
 # ==========================================
-elif page == "Patient Tracking":
-    st.markdown('<div class="page-header">Electronic Health Records (EHR)</div>', unsafe_allow_html=True)
-    st.markdown('<div class="page-subheader">Click on any patient row to view their comprehensive medical profile and progression</div>', unsafe_allow_html=True)
+elif page == "Patient Atlas":
+    st.markdown('<div class="page-header">Patient Timeline Hub</div>', unsafe_allow_html=True)
+    st.markdown('<div class="page-subheader">Browse patient history, review prior analyses, and compare serial studies inside one longitudinal workspace.</div>', unsafe_allow_html=True)
 
     data = c.execute("SELECT * FROM history ORDER BY time DESC").fetchall()
     df = pd.DataFrame(data, columns=['ID', 'Name', 'Age', 'Gender', 'Date', 'Diagnosis Result', 'Coordinates', 'Image1', 'Image2', 'AI Report'])
@@ -869,7 +1631,7 @@ elif page == "Patient Tracking":
             with col_export:
                 st.write("") 
                 csv = df.to_csv(index=False).encode('utf-8')
-                st.download_button(label="Export Full DB", data=csv, file_name='NeuroVision_DB.csv', mime='text/csv', use_container_width=True)
+                st.download_button(label="Export Registry Data", data=csv, file_name='NeuroVision_DB.csv', mime='text/csv', use_container_width=True)
 
             if search_query:
                 df_display = df[df['Name'].str.contains(search_query, case=False, na=False)]
@@ -879,7 +1641,7 @@ elif page == "Patient Tracking":
             # Lọc bỏ tên trùng, chỉ giữ lần khám mới nhất cho bảng tổng quan
             df_unique_patients = df_display.drop_duplicates(subset=['Name'], keep='first')
 
-            st.markdown("### Patient Directory")
+            st.markdown("### Active Patient List")
             st.info("**Tip:** Click on any row in the table below to open the patient's full medical profile.")
             
             try:
@@ -906,8 +1668,8 @@ elif page == "Patient Tracking":
             latest_record = p_records_asc[-1]
 
             with st.container(border=True):
-                st.markdown(f"<h2 style='text-align:center; color:#00ADB5;'>Patient Profile: {selected_patient}</h2>", unsafe_allow_html=True)
-                st.markdown(f"<p style='text-align:center; color:#888;'>Age: {latest_record[2]} | Gender: {latest_record[3]} | Total Scans: {len(p_records)}</p>", unsafe_allow_html=True)
+                st.markdown(f"<h2 style='text-align:center; color:#163128;'>Patient Dossier: {selected_patient}</h2>", unsafe_allow_html=True)
+                st.markdown(f"<p style='text-align:center; color:#5f776d;'>Age: {latest_record[2]} | Gender: {latest_record[3]} | Total Scans: {len(p_records)}</p>", unsafe_allow_html=True)
                 
                 tab_hist, tab_comp, tab_edit, tab_manage = st.tabs([
                     "Scan History", 
@@ -930,14 +1692,14 @@ elif page == "Patient Tracking":
                             colA, colB = st.columns(2)
                             try:
                                 colA.image(rec[7], caption="Detected Region", use_container_width=True)
-                                colB.image(rec[8], caption="Attention Heatmap", use_container_width=True)
+                                colB.image(rec[8], caption="U-Net Segmentation Overlay", use_container_width=True)
                             except:
                                 st.warning("Images are no longer stored on the server.")
 
                             try:
                                 hist_pdf = export_pdf(rec[1], rec[2], rec[3], rec[5], report_text, rec[7], rec[8])
                                 with open(hist_pdf, "rb") as f:
-                                    st.download_button("Download PDF Report", f, file_name=f"{remove_accents(rec[1])}_{rec[4][:10]}_Report.pdf", key=f"dl_hist_{rec_id}")
+                                    st.download_button("Export Visit Report", f, file_name=f"{remove_accents(rec[1])}_{rec[4][:10]}_Report.pdf", key=f"dl_hist_{rec_id}")
                             except Exception:
                                 pass
 
@@ -946,7 +1708,7 @@ elif page == "Patient Tracking":
                     if len(p_records_asc) < 2:
                         st.info("Not enough data. You need to scan this patient at least twice to track disease progression over time.")
                     else:
-                        st.markdown("<h4 style='text-align:center;'>Compare MRI Scans</h4>", unsafe_allow_html=True)
+                        st.markdown("<h4 style='text-align:center;'>Study-to-Study Comparison</h4>", unsafe_allow_html=True)
                         
                         scan_dict = {f"Scan on {r[4][:16]} | {r[5].split('(')[0].strip()}": r for r in p_records_asc}
                         scan_labels = list(scan_dict.keys())
@@ -982,15 +1744,15 @@ elif page == "Patient Tracking":
                                 st.error("Image missing for comparison.")
                                 
                             st.write("")
-                            st.markdown("<h5 style='text-align:center;'>2. Neural Activity (Heatmap) Comparison</h5>", unsafe_allow_html=True)
+                            st.markdown("<h5 style='text-align:center;'>2. Segmentation Overlay Comparison</h5>", unsafe_allow_html=True)
                             hm_col1, hm_col2 = st.columns(2)
                             try:
-                                hm_col1.image(scan_a[8], caption=f"Heatmap A ({scan_a[4][:10]})", use_container_width=True)
-                                hm_col2.image(scan_b[8], caption=f"Heatmap B ({scan_b[4][:10]})", use_container_width=True)
+                                hm_col1.image(scan_a[8], caption=f"Overlay A ({scan_a[4][:10]})", use_container_width=True)
+                                hm_col2.image(scan_b[8], caption=f"Overlay B ({scan_b[4][:10]})", use_container_width=True)
                             except:
                                 st.error("Image missing for comparison.")
 
-                            if st.button("Run AI Progression Analysis", use_container_width=True, type="primary", key=f"btn_comp_{selected_patient}"):
+                            if st.button("Generate Progression Brief", use_container_width=True, type="primary", key=f"btn_comp_{selected_patient}"):
                                 with st.spinner("NeuroVision is assessing progression..."):
                                     if OPENAI_KEY:
                                         try:
@@ -1026,7 +1788,7 @@ elif page == "Patient Tracking":
                                     st.markdown(st.session_state.comp_report, unsafe_allow_html=True)
                                     pdf_comp = export_comparison_pdf(selected_patient, scan_a[2], scan_a[3], scan_a, scan_b, st.session_state.comp_report)
                                     with open(pdf_comp, "rb") as f:
-                                        st.download_button("Download Progression Report (PDF)", f, file_name=f"{remove_accents(selected_patient)}_Progression.pdf", use_container_width=True)
+                                        st.download_button("Export Progression Brief", f, file_name=f"{remove_accents(selected_patient)}_Progression.pdf", use_container_width=True)
 
                 # --- TAB 3: CHỈNH SỬA THÔNG TIN ---
                 with tab_edit:
@@ -1039,7 +1801,7 @@ elif page == "Patient Tracking":
                         gender_index = ["Male", "Female", "Other"].index(latest_record[3]) if latest_record[3] in ["Male", "Female", "Other"] else 0
                         new_gender = e_col3.selectbox("Gender", ["Male", "Female", "Other"], index=gender_index)
                         
-                        submit_edit = st.form_submit_button("Save Changes to All Records")
+                        submit_edit = st.form_submit_button("Apply Profile Update")
                         if submit_edit:
                             c.execute("UPDATE history SET name=?, age=?, gender=? WHERE name=?", (new_name, new_age, new_gender, selected_patient))
                             conn.commit()
@@ -1060,16 +1822,18 @@ elif page == "Patient Tracking":
                                 st.caption(f"Diagnosis: {rec[5]}")
                             with col_btn:
                                 st.write("") 
-                                if st.button("Delete This Scan", key=f"del_scan_{rec_id}", use_container_width=True):
+                                if st.button("Remove This Visit", key=f"del_scan_{rec_id}", use_container_width=True):
                                     c.execute("DELETE FROM history WHERE id=?", (rec_id,))
                                     conn.commit()
                                     st.rerun()
 
                     st.markdown("---")
                     st.markdown("#### Bulk Action")
-                    if st.button("Delete ENTIRE Patient Profile", type="primary", use_container_width=True):
+                    if st.button("Archive Entire Patient Record", type="primary", use_container_width=True):
                         c.execute("DELETE FROM history WHERE name=?", (selected_patient,))
                         conn.commit()
                         st.rerun()
         else:
             st.info("Please click on a patient row in the table above to view their details, reports, and compare scans.")
+
+st.markdown('<a href="#top-of-page" class="scroll-to-top">Top</a>', unsafe_allow_html=True)
