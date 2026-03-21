@@ -1,0 +1,18 @@
+# Chặn thư mục data (theo ý bạn)
+data/
+
+# Chặn môi trường ảo (rất quan trọng)
+venv/
+
+.venv/
+# Chặn cache của python
+__pycache__/
+*.py[cod]
+
+# Chặn cấu hình của VS Code
+.vscode/
+
+# Chặn file tạm của build (nếu có)
+build/
+dist/
+*.spec
