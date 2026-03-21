@@ -3,7 +3,11 @@ data/
 
 # Chặn môi trường ảo (rất quan trọng)
 venv/
-
+.streamlit/secrets.toml
+secrets.toml
+**/secrets.toml
+history_img/
+mediai.db
 .venv/
 # Chặn cache của python
 __pycache__/
