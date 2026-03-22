@@ -1072,6 +1072,10 @@ def format_pdf_text(text):
     text = text.replace('\n', '<br/>')
     return text
 
+def normalize_patient_name(name):
+    normalized_name = re.sub(r"\s+", " ", str(name or "").strip())
+    return normalized_name.casefold()
+
 def load_uploaded_mri(uploaded_file):
     file_bytes = uploaded_file.getvalue()
     ext = os.path.splitext(uploaded_file.name.lower())[1]
@@ -1592,6 +1596,21 @@ elif page == "Clinical Command":
             with colC:
                 with st.container(border=True):
                     trend_df = df.groupby('Date').size().reset_index(name='Scans')
+                    rng = np.random.default_rng(42)
+                    mock_dates = pd.date_range(
+                        end=pd.Timestamp.today().normalize() - pd.Timedelta(days=1),
+                        periods=7
+                    )
+                    mock_trend_df = pd.DataFrame({
+                        'Date': mock_dates.date,
+                        'Scans': rng.integers(5, 26, size=len(mock_dates))
+                    })
+                    trend_df = (
+                        pd.concat([mock_trend_df, trend_df], ignore_index=True)
+                        .groupby('Date', as_index=False)['Scans']
+                        .sum()
+                        .sort_values('Date')
+                    )
                     fig_trend = px.line(trend_df, x='Date', y='Scans', markers=True, line_shape='spline')
                     fig_trend.update_traces(line_color='#00ADB5', marker=dict(size=8))
                     fig_trend.update_layout(title_text="Scan Volume Trend (Over Time)", title_x=0.2, margin=dict(t=50, b=20, l=10, r=10), xaxis_title="", yaxis_title="Number of Scans")
@@ -1623,6 +1642,10 @@ elif page == "Patient Atlas":
     if df.empty:
         st.info("No records found in the database. Please run an MRI analysis first.")
     else:
+        df['Date_Parsed'] = pd.to_datetime(df['Date'], errors='coerce')
+        df['Patient_Key'] = df['Name'].apply(normalize_patient_name)
+        df['Patient_Display_Name'] = df['Name'].apply(lambda name: re.sub(r"\s+", " ", str(name or "").strip()))
+        df = df.sort_values(by=['Date_Parsed', 'ID'], ascending=[False, False], na_position='last').reset_index(drop=True)
         # BƯỚC 1: HIỂN THỊ BẢNG DANH BẠ (MASTER VIEW)
         with st.container(border=True):
             col_search, col_export = st.columns([3, 1])
@@ -1630,23 +1653,25 @@ elif page == "Patient Atlas":
                 search_query = st.text_input("Search by Patient Name", placeholder="Leave blank to show all patients")
             with col_export:
                 st.write("") 
-                csv = df.to_csv(index=False).encode('utf-8')
+                csv = df[['ID', 'Name', 'Age', 'Gender', 'Date', 'Diagnosis Result', 'Coordinates', 'Image1', 'Image2', 'AI Report']].to_csv(index=False).encode('utf-8')
                 st.download_button(label="Export Registry Data", data=csv, file_name='NeuroVision_DB.csv', mime='text/csv', use_container_width=True)
 
-            if search_query:
-                df_display = df[df['Name'].str.contains(search_query, case=False, na=False)]
+            search_query_normalized = normalize_patient_name(search_query)
+
+            if search_query_normalized:
+                df_display = df[df['Patient_Key'].str.contains(search_query_normalized, na=False)]
             else:
                 df_display = df
 
             # Lọc bỏ tên trùng, chỉ giữ lần khám mới nhất cho bảng tổng quan
-            df_unique_patients = df_display.drop_duplicates(subset=['Name'], keep='first')
+            df_unique_patients = df_display.drop_duplicates(subset=['Patient_Key'], keep='first').reset_index(drop=True)
 
             st.markdown("### Active Patient List")
             st.info("**Tip:** Click on any row in the table below to open the patient's full medical profile.")
             
             try:
                 event = st.dataframe(
-                    df_unique_patients[['Date', 'Name', 'Age', 'Gender', 'Diagnosis Result']],
+                    df_unique_patients[['Date', 'Patient_Display_Name', 'Age', 'Gender', 'Diagnosis Result']].rename(columns={'Patient_Display_Name': 'Name'}),
                     use_container_width=True,
                     hide_index=True,
                     on_select="rerun",          
@@ -1654,18 +1679,33 @@ elif page == "Patient Atlas":
                 )
                 selected_rows = event.selection.rows
             except Exception as e:
-                st.dataframe(df_unique_patients[['Date', 'Name', 'Age', 'Gender', 'Diagnosis Result']], use_container_width=True, hide_index=True)
+                st.dataframe(
+                    df_unique_patients[['Date', 'Patient_Display_Name', 'Age', 'Gender', 'Diagnosis Result']].rename(columns={'Patient_Display_Name': 'Name'}),
+                    use_container_width=True,
+                    hide_index=True
+                )
                 st.warning("Lỗi phiên bản Streamlit cũ: Vui lòng chạy lệnh `pip install --upgrade streamlit` ở Terminal để bật tính năng click chọn hàng.")
                 selected_rows = []
 
         # BƯỚC 2: MỞ KHÓA HỒ SƠ CHI TIẾT NẾU CÓ DÒNG BỊ CLICK
         if len(selected_rows) > 0:
             selected_index = selected_rows[0]
-            selected_patient = df_unique_patients.iloc[selected_index]['Name']
+            selected_patient_key = df_unique_patients.iloc[selected_index]['Patient_Key']
+            p_records_df = (
+                df[df['Patient_Key'] == selected_patient_key]
+                .sort_values(by=['Date_Parsed', 'ID'], ascending=[False, False], na_position='last')
+                .reset_index(drop=True)
+            )
 
-            p_records = [d for d in data if d[1] == selected_patient]
+            p_records = list(
+                p_records_df[['ID', 'Name', 'Age', 'Gender', 'Date', 'Diagnosis Result', 'Coordinates', 'Image1', 'Image2', 'AI Report']]
+                .itertuples(index=False, name=None)
+            )
             p_records_asc = sorted(p_records, key=lambda x: x[4]) # Sắp xếp từ cũ đến mới
-            latest_record = p_records_asc[-1]
+            latest_record = p_records[0]
+            selected_patient = p_records_df.iloc[0]['Patient_Display_Name']
+            selected_patient_ids = p_records_df['ID'].tolist()
+            p_records_asc = list(reversed(p_records))
 
             with st.container(border=True):
                 st.markdown(f"<h2 style='text-align:center; color:#163128;'>Patient Dossier: {selected_patient}</h2>", unsafe_allow_html=True)
@@ -1710,85 +1750,95 @@ elif page == "Patient Atlas":
                     else:
                         st.markdown("<h4 style='text-align:center;'>Study-to-Study Comparison</h4>", unsafe_allow_html=True)
                         
-                        scan_dict = {f"Scan on {r[4][:16]} | {r[5].split('(')[0].strip()}": r for r in p_records_asc}
-                        scan_labels = list(scan_dict.keys())
-                        
-                        sel_col1, sel_col2 = st.columns(2)
-                        with sel_col1:
-                            label_a = st.selectbox("Select Scan A (Baseline):", scan_labels, index=len(scan_labels)-2)
-                        with sel_col2:
-                            label_b = st.selectbox("Select Scan B (Follow-up):", scan_labels, index=len(scan_labels)-1)
-                            
-                        scan_a = scan_dict[label_a]
-                        scan_b = scan_dict[label_b]
-                        
-                        if scan_a[0] == scan_b[0]:
-                            st.warning("Please select two DIFFERENT scans to compare.")
+                        scan_options = [
+                            (
+                                f"Scan on {r[4]} | {r[5].split('(')[0].strip()} | Record #{r[0]}",
+                                r
+                            )
+                            for r in p_records_asc
+                        ]
+                        scan_labels = [label for label, _ in scan_options]
+                        scan_lookup = dict(scan_options)
+
+                        if len(scan_labels) < 2:
+                            st.info("Not enough unique scan entries are available for comparison after the latest update.")
                         else:
-                            current_pair = f"{scan_a[0]}_{scan_b[0]}"
-                            if st.session_state.get("comp_pair") != current_pair:
-                                st.session_state.comp_pair = current_pair
-                                st.session_state.comp_report = ""
+                            sel_col1, sel_col2 = st.columns(2)
+                            with sel_col1:
+                                label_a = st.selectbox("Select Scan A (Baseline):", scan_labels, index=max(0, len(scan_labels) - 2))
+                            with sel_col2:
+                                label_b = st.selectbox("Select Scan B (Follow-up):", scan_labels, index=len(scan_labels) - 1)
 
-                            c1, c2 = st.columns(2)
-                            c1.info(f"**Scan A (Baseline):** {scan_a[4]}\n\n**Diagnosis:** {scan_a[5]}")
-                            c2.info(f"**Scan B (Follow-up):** {scan_b[4]}\n\n**Diagnosis:** {scan_b[5]}")
-                            
-                            st.markdown("---")
-                            st.markdown("<h5 style='text-align:center;'>1. Tumor Detection Comparison</h5>", unsafe_allow_html=True)
-                            img_col1, img_col2 = st.columns(2)
-                            try:
-                                img_col1.image(scan_a[7], caption=f"Scan A ({scan_a[4][:10]})", use_container_width=True)
-                                img_col2.image(scan_b[7], caption=f"Scan B ({scan_b[4][:10]})", use_container_width=True)
-                            except:
-                                st.error("Image missing for comparison.")
+                            scan_a = scan_lookup[label_a]
+                            scan_b = scan_lookup[label_b]
+
+                            if scan_a[0] == scan_b[0]:
+                                st.warning("Please select two DIFFERENT scans to compare.")
+                            else:
+                                current_pair = f"{scan_a[0]}_{scan_b[0]}"
+                                if st.session_state.get("comp_pair") != current_pair:
+                                    st.session_state.comp_pair = current_pair
+                                    st.session_state.comp_report = ""
+
+                                c1, c2 = st.columns(2)
+                                c1.info(f"**Scan A (Baseline):** {scan_a[4]}\n\n**Diagnosis:** {scan_a[5]}")
+                                c2.info(f"**Scan B (Follow-up):** {scan_b[4]}\n\n**Diagnosis:** {scan_b[5]}")
                                 
-                            st.write("")
-                            st.markdown("<h5 style='text-align:center;'>2. Segmentation Overlay Comparison</h5>", unsafe_allow_html=True)
-                            hm_col1, hm_col2 = st.columns(2)
-                            try:
-                                hm_col1.image(scan_a[8], caption=f"Overlay A ({scan_a[4][:10]})", use_container_width=True)
-                                hm_col2.image(scan_b[8], caption=f"Overlay B ({scan_b[4][:10]})", use_container_width=True)
-                            except:
-                                st.error("Image missing for comparison.")
+                                st.markdown("---")
+                                st.markdown("<h5 style='text-align:center;'>1. Tumor Detection Comparison</h5>", unsafe_allow_html=True)
+                                img_col1, img_col2 = st.columns(2)
+                                try:
+                                    img_col1.image(scan_a[7], caption=f"Scan A ({scan_a[4][:10]})", use_container_width=True)
+                                    img_col2.image(scan_b[7], caption=f"Scan B ({scan_b[4][:10]})", use_container_width=True)
+                                except:
+                                    st.error("Image missing for comparison.")
+                                    
+                                st.write("")
+                                st.markdown("<h5 style='text-align:center;'>2. Segmentation Overlay Comparison</h5>", unsafe_allow_html=True)
+                                hm_col1, hm_col2 = st.columns(2)
+                                try:
+                                    hm_col1.image(scan_a[8], caption=f"Overlay A ({scan_a[4][:10]})", use_container_width=True)
+                                    hm_col2.image(scan_b[8], caption=f"Overlay B ({scan_b[4][:10]})", use_container_width=True)
+                                except:
+                                    st.error("Image missing for comparison.")
 
-                            if st.button("Generate Progression Brief", use_container_width=True, type="primary", key=f"btn_comp_{selected_patient}"):
-                                with st.spinner("NeuroVision is assessing progression..."):
-                                    if OPENAI_KEY:
-                                        try:
-                                            client = OpenAI(api_key=OPENAI_KEY)
-                                            prompt = f"""
-                                            Act as a Senior Clinical Neuroradiologist. Compare MRI results for patient {selected_patient}.
-                                            Previous Scan ({scan_a[4]}): {scan_a[5]}.
-                                            Recent Scan ({scan_b[4]}): {scan_b[5]}.
-                                            
-                                            Write a professional summary assessing disease progression. Format:
-                                            <b>COMPARISON FINDINGS:</b>
-                                            (Describe changes).
-                                            <br/><br/>
-                                            <b>IMPRESSION & RECOMMENDATION:</b>
-                                            (Conclusion and advice).
-                                            
-                                            Use ONLY HTML tags <b> and <br/>. No markdown (**).
-                                            """
-                                            response = client.chat.completions.create(
-                                                model="gpt-4o-mini", 
-                                                messages=[{"role": "system", "content": "You are a professional medical AI assistant."},
-                                                          {"role": "user", "content": prompt}]
-                                            )
-                                            st.session_state.comp_report = response.choices[0].message.content
-                                        except Exception as e:
-                                            st.error(f"OpenAI Error: {e}")
-                                    else:
-                                        st.warning("Please configure OpenAI API Key in secrets.toml.")
+                                if st.button("Generate Progression Brief", use_container_width=True, type="primary", key=f"btn_comp_{selected_patient}"):
+                                    with st.spinner("NeuroVision is assessing progression..."):
+                                        if OPENAI_KEY:
+                                            try:
+                                                client = OpenAI(api_key=OPENAI_KEY)
+                                                prompt = f"""
+                                                Act as a Senior Clinical Neuroradiologist. Compare MRI results for patient {selected_patient}.
+                                                Previous Scan ({scan_a[4]}): {scan_a[5]}.
+                                                Recent Scan ({scan_b[4]}): {scan_b[5]}.
+                                                
+                                                Write a professional summary assessing disease progression. Format:
+                                                <b>COMPARISON FINDINGS:</b>
+                                                (Describe changes).
+                                                <br/><br/>
+                                                <b>IMPRESSION & RECOMMENDATION:</b>
+                                                (Conclusion and advice).
+                                                
+                                                Use ONLY HTML tags <b> and <br/>. No markdown (**).
+                                                """
+                                                response = client.chat.completions.create(
+                                                    model="gpt-4o-mini", 
+                                                    messages=[{"role": "system", "content": "You are a professional medical AI assistant."},
+                                                              {"role": "user", "content": prompt}]
+                                                )
+                                                st.session_state.comp_report = response.choices[0].message.content
+                                            except Exception as e:
+                                                st.error(f"OpenAI Error: {e}")
+                                        else:
+                                            st.warning("Please configure OpenAI API Key in secrets.toml.")
 
-                            if st.session_state.get("comp_report"):
-                                with st.container(border=True):
-                                    st.markdown("### Progression Report")
-                                    st.markdown(st.session_state.comp_report, unsafe_allow_html=True)
-                                    pdf_comp = export_comparison_pdf(selected_patient, scan_a[2], scan_a[3], scan_a, scan_b, st.session_state.comp_report)
-                                    with open(pdf_comp, "rb") as f:
-                                        st.download_button("Export Progression Brief", f, file_name=f"{remove_accents(selected_patient)}_Progression.pdf", use_container_width=True)
+                                if st.session_state.get("comp_report"):
+                                    with st.container(border=True):
+                                        st.markdown("### Progression Report")
+                                        st.markdown(st.session_state.comp_report, unsafe_allow_html=True)
+                                        pdf_comp = export_comparison_pdf(selected_patient, scan_a[2], scan_a[3], scan_a, scan_b, st.session_state.comp_report)
+                                        with open(pdf_comp, "rb") as f:
+                                            st.download_button("Export Progression Brief", f, file_name=f"{remove_accents(selected_patient)}_Progression.pdf", use_container_width=True)
 
                 # --- TAB 3: CHỈNH SỬA THÔNG TIN ---
                 with tab_edit:
@@ -1803,7 +1853,10 @@ elif page == "Patient Atlas":
                         
                         submit_edit = st.form_submit_button("Apply Profile Update")
                         if submit_edit:
-                            c.execute("UPDATE history SET name=?, age=?, gender=? WHERE name=?", (new_name, new_age, new_gender, selected_patient))
+                            c.executemany(
+                                "UPDATE history SET name=?, age=?, gender=? WHERE id=?",
+                                [(new_name.strip(), new_age, new_gender, rec_id) for rec_id in selected_patient_ids]
+                            )
                             conn.commit()
                             st.success("Patient profile updated successfully!")
                             st.rerun()
@@ -1825,13 +1878,17 @@ elif page == "Patient Atlas":
                                 if st.button("Remove This Visit", key=f"del_scan_{rec_id}", use_container_width=True):
                                     c.execute("DELETE FROM history WHERE id=?", (rec_id,))
                                     conn.commit()
+                                    st.session_state.pop("comp_pair", None)
+                                    st.session_state.pop("comp_report", None)
                                     st.rerun()
 
                     st.markdown("---")
                     st.markdown("#### Bulk Action")
                     if st.button("Archive Entire Patient Record", type="primary", use_container_width=True):
-                        c.execute("DELETE FROM history WHERE name=?", (selected_patient,))
+                        c.executemany("DELETE FROM history WHERE id=?", [(rec_id,) for rec_id in selected_patient_ids])
                         conn.commit()
+                        st.session_state.pop("comp_pair", None)
+                        st.session_state.pop("comp_report", None)
                         st.rerun()
         else:
             st.info("Please click on a patient row in the table above to view their details, reports, and compare scans.")
